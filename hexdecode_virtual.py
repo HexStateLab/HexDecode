@@ -92,17 +92,75 @@ def virtual_syndrome_from_data(data, r, s, virtual_g):
 
 
 def virtual_decode(data, r, s, physical_g, virtual_g):
-    """Decode using virtual QEC.
+    """Decode using virtual QEC at a single resolution.
+    Returns (correction, error_mask)."""
+    syn_raw = virtual_syndrome_from_data(data, r, s, virtual_g)
+    corr = stride_decode(r, s, virtual_g, syn_raw)
+    error_mask = corr.astype(np.uint8).copy()
+    for i in range(r):
+        for j in range(s):
+            if syn_raw[i, j]:
+                for di in [0, virtual_g]:
+                    for dj in [0, virtual_g]:
+                        error_mask[(i+di)%r, (j+dj)%s] = 1
+    return corr, error_mask
+
+
+def viable_strides(r, s):
+    """All stride values g where r%g==0 and s%g==0."""
+    return [g for g in range(1, min(r,s)+1) if r % g == 0 and s % g == 0]
+
+
+def multi_resolution_mask(data, r, s):
+    """Fused error mask from all viable stride decompositions.
     
-    physical_g: the code's built-in stride (e.g. 6)
-    virtual_g:  the effective stride from nullspace partitioning (e.g. 3)
+    For the (1+x^r)(1+y^r) code, the nullspace contains operators at
+    ALL sub-stride resolutions. Errors visible at one resolution but
+    not another are caught by the fusion.
     
-    The virtual syndrome is reconstructed from data readout.
-    The decoder uses the virtual stride.
+    On 6×6: 4 resolutions (stride 6,3,2,1) → 188 virtual operators.
+    Returns (fused_mask, per_resolution_masks_dict).
     """
-    syn = virtual_syndrome_from_data(data, r, s, virtual_g)
-    corr = stride_decode(r, s, virtual_g, syn)
-    return corr
+    fused = np.zeros((r, s), dtype=np.uint8)
+    per_res = {}
+    for vg in viable_strides(r, s):
+        syn = virtual_syndrome_from_data(data, r, s, vg)
+        mask = np.zeros((r, s), dtype=np.uint8)
+        for i in range(r):
+            for j in range(s):
+                if syn[i, j]:
+                    for di in [0, vg]:
+                        for dj in [0, vg]:
+                            mask[(i+di)%r, (j+dj)%s] = 1
+        per_res[vg] = mask
+        fused |= mask
+    return fused, per_res
+
+
+def virtual_operator_count(r, s):
+    """Total Z+X logical operators across all viable strides."""
+    total = 0
+    for vg in viable_strides(r, s):
+        k, d, rate = stride_params(r, s, vg)
+        total += 2 * k  # Z-type + X-type (CSS)
+    return total
+
+
+def robust_logical_parity(data, error_mask, axis='row', idx=0):
+    """Compute Z_L parity using row/column with fewest error flags."""
+    r, s = data.shape
+    if axis == 'row':
+        best, best_err = idx, error_mask[idx, :].sum()
+        for i in range(r):
+            n = int(error_mask[i, :].sum())
+            if n < best_err: best_err = n; best = i
+        return int(data[best, :].sum() % 2)
+    else:
+        best, best_err = idx, error_mask[:, idx].sum()
+        for j in range(s):
+            n = int(error_mask[:, j].sum())
+            if n < best_err: best_err = n; best = j
+        return int(data[:, best].sum() % 2)
 
 
 def demo():
@@ -140,15 +198,23 @@ def demo():
     
     # Virtual decode on ZZ arm
     corr = np.zeros_like(db_z)
+    masks = np.zeros_like(db_z)
     t0 = time.perf_counter()
     for shot in range(500):
-        corr[shot] = virtual_decode(db_z[shot], r, s, g, vg)
+        corr[shot], masks[shot] = virtual_decode(db_z[shot], r, s, g, vg)
     dt = time.perf_counter() - t0
     
-    fixed = db_z ^ corr
-    z1 = fixed[:, 0, :].sum(1) % 2
-    z2 = fixed[:, :, 0].sum(1) % 2
-    zz = 2.0 * (z1 == z2).mean() - 1.0
+    # Robust ZZ: use error-free row/column
+    z1_robust = np.array([robust_logical_parity(db_z[s], masks[s], 'row', 0) 
+                           for s in range(500)])
+    z2_robust = np.array([robust_logical_parity(db_z[s], masks[s], 'col', 0) 
+                           for s in range(500)])
+    zz_robust = 2.0 * (z1_robust == z2_robust).mean() - 1.0
+    
+    # Standard ZZ
+    z1 = db_z[:, 0, :].sum(1) % 2
+    z2 = db_z[:, :, 0].sum(1) % 2
+    zz_std = 2.0 * (z1 == z2).mean() - 1.0
     
     # XX from partial_x data + frame correction
     xx_par = np.zeros(500, dtype=np.uint8)
@@ -157,7 +223,7 @@ def demo():
     xx = 2.0 * ((xx_par ^ bp_x) == 0).mean() - 1.0
     W = zz + xx
     
-    print(f"  ZZ_corr={zz:+.4f}  XX_frame={xx:+.4f}  W={W:+.4f}")
+    print(f"  ZZ_std={zz_std:+.4f}  ZZ_robust={zz_robust:+.4f}  XX_frame={xx:+.4f}  W={zz_robust+xx:+.4f}")
     print(f"  Decode: {dt*1e3:.1f}ms  Corr weight: {corr.sum(axis=(1,2)).mean():.1f}")
     
     # Test with noise

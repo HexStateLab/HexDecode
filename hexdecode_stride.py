@@ -31,7 +31,9 @@ from pw_opt import build_circuit, all_syndromes_opt
 from hexdecode.stridecodec_bindings import decode as stride_decode
 from hexdecode.stridecodec_bindings import is_stabilizer as stride_is_stab
 from hexdecode.stridecodec_bindings import params as stride_params
-from hexdecode.decoder import virtual_decode
+from hexdecode_virtual import (build_virtual_circuit, virtual_decode,
+                                multi_resolution_mask, robust_logical_parity,
+                                viable_strides, virtual_operator_count)
 
 
 def main():
@@ -168,12 +170,14 @@ def main():
             framed = bits
 
             # Decode with stride-generalized decoder (or virtual QEC)
+            # Multi-resolution virtual QEC
             corr = np.zeros_like(data)
             t0 = time.perf_counter()
             if use_virtual:
                 for shot in range(nsh):
-                    corr[shot] = virtual_decode(data[shot], r, s, g,
-                                                 opts.virtual_stride)
+                    fused_mask, _ = multi_resolution_mask(data[shot], r, s)
+                    corr[shot], _ = virtual_decode(data[shot], r, s, g,
+                                                    opts.virtual_stride)
             else:
                 syn = all_syndromes_opt(pub, opts.rounds, r, s, n_anc,
                                         no_reset=True, free_final_round=ff,
