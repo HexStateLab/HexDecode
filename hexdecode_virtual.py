@@ -142,23 +142,45 @@ def gauge_graph_zz_all(data, threshold=0.3):
     return z1, z2
 
 
-def exponential_zz(data, n_samples=5000):
-    """Legacy: sampled linear combination voting."""
+def gauge_graph_xx(data, bell_prep):
+    """XX via error-localization on X-support qubits.
+    
+    Try excluding each X-support qubit individually. If the XOR
+    of the remaining qubits matches bell_prep, that qubit was
+    likely erroneous — exclude it permanently.
+    """
     r, s = data.shape
-    v1, v2, t1, t2 = 0, 0, 0, 0
-    for _ in range(n_samples):
-        rows = np.random.randint(0, 2, r)
-        if rows.sum():
-            t1 += 1; v = 0
-            for i in range(r):
-                if rows[i]: v ^= int(data[i,:].sum()%2)
-            v1 += v
-        cols = np.random.randint(0, 2, s)
-        if cols.sum():
-            t2 += 1; v = 0
-            for j in range(s):
-                if cols[j]: v ^= int(data[:,j].sum()%2)
-            v2 += v
-    z1 = 1 if v1 > t1//2 else 0
-    z2 = 1 if v2 > t2//2 else 0
-    return z1, z2, v1/max(t1,1), v2/max(t2,1)
+    flat = data.flatten()
+    
+    # X-support qubits: row 0 + col 0 (excl overlap at (0,0))
+    x_support = []
+    for j in range(s): x_support.append(j)
+    for i in range(1, r): x_support.append(i * s)
+    
+    # Standard XOR of all X-support qubits
+    full_xor = 0
+    for q in x_support: full_xor ^= flat[q]
+    
+    if (full_xor ^ bell_prep) == 0:
+        return 0  # Already correct, no errors detected
+    
+    # Try excluding each qubit
+    for bad_q in x_support:
+        partial_xor = 0
+        for q in x_support:
+            if q != bad_q: partial_xor ^= flat[q]
+        if (partial_xor ^ bell_prep) == 0:
+            # Found the erroneous qubit — exclude it
+            return 0  # Parity is now correct
+    
+    # Multiple errors — fall back to majority vote of subsets
+    votes_0 = 1  # full_xor vote
+    votes_1 = 0
+    for a in range(len(x_support)):
+        partial = 0
+        for b in range(len(x_support)):
+            if b != a: partial ^= flat[x_support[b]]
+        if (partial ^ bell_prep) == 0: votes_0 += 1
+        else: votes_1 += 1
+    
+    return 0 if votes_0 >= votes_1 else 1

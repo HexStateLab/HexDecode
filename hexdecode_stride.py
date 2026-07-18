@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(_here, '..', 'Heron-R2'))
 sys.path.insert(0, os.path.join(_here, '..'))
 sys.path.insert(0, os.path.join(_here, 'hexdecode'))
 
-from hexdecode_virtual import build_virtual_circuit, gauge_graph_zz_all
+from hexdecode_virtual import build_virtual_circuit, gauge_graph_zz_all, gauge_graph_xx
 from stridecodec_bindings import params as stride_params
 
 from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2
@@ -97,14 +97,22 @@ def main():
             bits = z1_vq ^ z2_vq
             framed = bits
         else:
-            xx_par = np.zeros(nsh, dtype=np.uint8)
-            for j in range(s): xx_par ^= data[:, 0, j]
-            for i in range(r): xx_par ^= data[:, i, 0]
-            bits = xx_par
-            framed = xx_par ^ m
-            raw = 2.0 * (bits == 0).mean() - 1.0
-            fval = 2.0 * (framed == 0).mean() - 1.0
-            print(f"  <XX> raw={raw:+.4f}  frame={fval:+.4f}")
+            xx_std = np.zeros(nsh, dtype=np.uint8)
+            xx_gg  = np.zeros(nsh, dtype=np.uint8)
+            for shot in range(nsh):
+                xxp = 0
+                for j in range(s): xxp ^= data[shot, 0, j]
+                for i in range(r): xxp ^= data[shot, i, 0]
+                xx_std[shot] = xxp ^ m[shot]
+                xx_gg[shot]  = gauge_graph_xx(data[shot], m[shot])
+            
+            xx_std_val = 2.0 * (xx_std == 0).mean() - 1.0
+            xx_gg_val  = 2.0 * (xx_gg == 0).mean() - 1.0
+            n_xsup = r + s - 1
+            print(f"  <XX> std={xx_std_val:+.4f}  gauge_graph={xx_gg_val:+.4f}  "
+                  f"({n_xsup} X-support qubits)")
+            framed = xx_gg
+            bits = xx_gg
         out[arm] = (bits, framed)
 
     zz_bits, _ = out["ZZ"]
