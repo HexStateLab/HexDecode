@@ -10,6 +10,16 @@ import numpy as np
 from .bindings import (solve_plane as _c_solve, preprocess_syndrome as _c_prep,
                          syndrome_of as _c_syn_of, is_stabilizer as _c_is_stab)
 
+# Stride-generalized decoder
+try:
+    from .stridecodec_bindings import decode as _stride_decode
+    from .stridecodec_bindings import syndrome_of as _stride_syndrome
+    from .stridecodec_bindings import is_stabilizer as _stride_is_stab
+    from .stridecodec_bindings import params as _stride_params
+    _has_stride = True
+except (ImportError, OSError):
+    _has_stride = False
+
 
 def prep(syn, r, s):
     """Preprocess syndrome in-place (measurement fault repair)."""
@@ -19,6 +29,39 @@ def prep(syn, r, s):
 def solve(syn, r, s):
     """Minimum-weight correction from syndrome via C decoder."""
     return _c_solve(r, s, syn)
+
+
+def solve_stride(syn, r, s, stride):
+    """Decode with (1+x^stride)(1+y^stride) polynomial codec."""
+    if _has_stride:
+        return _stride_decode(r, s, stride, syn)
+    raise RuntimeError("libstridecodec.so not available")
+
+
+def virtual_decode(data, r, s, physical_stride, virtual_stride):
+    """Virtual QEC: reconstruct virtual syndrome from data readout.
+    
+    For codes where physical_stride ≥ virtual_stride, the nullspace
+    of the physical code contains the virtual code structure.
+    Syndrome is reconstructed via:
+      V[i][j] = data[i][j] ⊕ data[(i+g)%r][j]
+      S[i][j] = V[i][j] ⊕ V[i][(j+g)%s]
+    where g = virtual_stride.
+    
+    No ancilla qubits needed — syndrome comes from data correlations.
+    """
+    import numpy as np
+    r2, s2 = r, s
+    g = virtual_stride
+    data = np.asarray(data, dtype=np.uint8).reshape(r2, s2)
+    V = data ^ np.roll(data, shift=-g, axis=0)
+    S = V ^ np.roll(V, shift=-g, axis=1)
+    return _stride_decode(r2, s2, g, S.astype(np.uint8))
+
+
+def virtual_params(r, s, physical_g, virtual_g):
+    """Return effective code parameters for virtual QEC."""
+    return _stride_params(r, s, virtual_g)
 
 
 def S_of(E, r, s):

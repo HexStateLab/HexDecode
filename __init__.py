@@ -16,6 +16,7 @@ from .bindings import (solve_plane, solve_plane_layered, solve_plane_fast,
                         syndrome_of, preprocess_syndrome, is_stabilizer,
                         decode_Z, PlaneWarp, libplane_s1)
 from .decoder import (tesseract_decode, tesseract_decode_ffinal, prep,
-                       S_of, check_logical)
+                       S_of, check_logical, solve, solve_stride,
+                       virtual_decode, virtual_params)
 
 __version__ = "1.0.0"
