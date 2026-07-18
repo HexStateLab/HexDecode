@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(_here, '..', 'Heron-R2'))
 sys.path.insert(0, os.path.join(_here, '..'))
 sys.path.insert(0, os.path.join(_here, 'hexdecode'))
 
-from hexdecode_virtual import build_virtual_circuit, exponential_zz
+from hexdecode_virtual import build_virtual_circuit, gauge_graph_zz_all
 from stridecodec_bindings import params as stride_params
 
 from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2
@@ -83,16 +83,18 @@ def main():
         if arm == "ZZ":
             z1_std = data[:, 0, :].sum(1) % 2
             z2_std = data[:, :, 0].sum(1) % 2
-            z1_exp = np.zeros(nsh, dtype=np.uint8)
-            z2_exp = np.zeros(nsh, dtype=np.uint8)
+            z1_vq = np.zeros(nsh, dtype=np.uint8)
+            z2_vq = np.zeros(nsh, dtype=np.uint8)
             t0 = time.perf_counter()
             for shot in range(nsh):
-                z1_exp[shot], z2_exp[shot], _, _ = exponential_zz(data[shot], 2000)
+                z1_vq[shot], z2_vq[shot] = gauge_graph_zz_all(data[shot])
             dt = time.perf_counter() - t0
             zz_std = 2.0 * (z1_std == z2_std).mean() - 1.0
-            zz_exp = 2.0 * (z1_exp == z2_exp).mean() - 1.0
-            print(f"  <ZZ> std={zz_std:+.4f}  exp_vote={zz_exp:+.4f}  decode={dt*1e3:.0f}ms")
-            bits = z1_exp ^ z2_exp
+            zz_vq  = 2.0 * (z1_vq == z2_vq).mean() - 1.0
+            n_checks = r*s*(r*s-1)//2
+            print(f"  <ZZ> std={zz_std:+.4f}  gauge_graph={zz_vq:+.4f}  "
+                  f"({n_checks} virtual checks, {dt*1e3:.0f}ms)")
+            bits = z1_vq ^ z2_vq
             framed = bits
         else:
             xx_par = np.zeros(nsh, dtype=np.uint8)
