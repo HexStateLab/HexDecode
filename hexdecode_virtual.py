@@ -146,21 +146,41 @@ def virtual_operator_count(r, s):
     return total
 
 
-def robust_logical_parity(data, error_mask, axis='row', idx=0):
-    """Compute Z_L parity using row/column with fewest error flags."""
+def exponential_zz(data, n_samples=5000):
+    """Compute ZZ using exponential virtual qubit voting.
+    
+    Samples n_samples random linear combinations of the N nullspace
+    vectors. Each combination votes on Z1 (row-like) and Z2 (col-like).
+    Majority vote across all combinations gives the error-robust value.
+    
+    For N=36: 2^36 ≈ 68 billion possible combinations.
+    """
     r, s = data.shape
-    if axis == 'row':
-        best, best_err = idx, error_mask[idx, :].sum()
-        for i in range(r):
-            n = int(error_mask[i, :].sum())
-            if n < best_err: best_err = n; best = i
-        return int(data[best, :].sum() % 2)
-    else:
-        best, best_err = idx, error_mask[:, idx].sum()
-        for j in range(s):
-            n = int(error_mask[:, j].sum())
-            if n < best_err: best_err = n; best = j
-        return int(data[:, best].sum() % 2)
+    votes_z1 = 0; total_z1 = 0
+    votes_z2 = 0; total_z2 = 0
+    
+    for _ in range(n_samples):
+        rows = np.random.randint(0, 2, r)
+        if rows.sum() > 0:
+            total_z1 += 1
+            v = 0
+            for i in range(r):
+                if rows[i]: v ^= int(data[i, :].sum() % 2)
+            votes_z1 += v
+        
+        cols = np.random.randint(0, 2, s)
+        if cols.sum() > 0:
+            total_z2 += 1
+            v = 0
+            for j in range(s):
+                if cols[j]: v ^= int(data[:, j].sum() % 2)
+            votes_z2 += v
+    
+    z1 = 1 if votes_z1 > total_z1 // 2 else 0
+    z2 = 1 if votes_z2 > total_z2 // 2 else 0
+    conf1 = votes_z1 / max(total_z1, 1)
+    conf2 = votes_z2 / max(total_z2, 1)
+    return z1, z2, conf1, conf2
 
 
 def demo():
