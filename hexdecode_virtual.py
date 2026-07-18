@@ -18,20 +18,43 @@ from stridecodec_bindings import decode as stride_decode
 from stridecodec_bindings import syndrome_of as stride_syndrome
 
 
-def build_virtual_circuit(r, s, g, partial_x=False):
+def build_virtual_circuit(r, s, g, partial_x=False, rounds=1):
+    """Build Bell test circuit for virtual QEC code.
+    
+    No QEC ancilla rounds. rounds = number of Bell ancilla measurements.
+    rounds=1: Bell prep only (XX from partial_x data)
+    rounds>1: Bell prep + (rounds-1) bell_measure gadgets
+    """
     n_data = r * s
-    qr = QuantumRegister(n_data + 1, "q")
-    cregs = [ClassicalRegister(n_data, "data"), ClassicalRegister(1, "bell")]
-    qc = QuantumCircuit(qr, *cregs)
+    n_extra = 1  # Bell ancilla
+    n_cregs = [ClassicalRegister(n_data, "data"), ClassicalRegister(1, "bell")]
+    if rounds > 1:
+        n_extra += 1  # bell_measure ancilla
+        for rnd in range(rounds - 1):
+            n_cregs.append(ClassicalRegister(1, f"bell_m{rnd}"))
+    
+    qr = QuantumRegister(n_data + n_extra, "q")
+    qc = QuantumCircuit(qr, *n_cregs)
     
     dq = lambda i, j: (i % r) * s + (j % s)
     support = _bell_support_coords(r, s, True)
     bell_q = n_data
     
+    # Bell prep
     qc.h(bell_q)
     for (i, j) in support: qc.cx(bell_q, dq(i, j))
     qc.h(bell_q)
-    qc.measure(bell_q, cregs[1][0])
+    qc.measure(bell_q, n_cregs[1][0])
+    
+    # Additional bell_measure rounds
+    if rounds > 1:
+        bell_m = n_data + 1
+        for rnd in range(rounds - 1):
+            qc.reset(bell_m)
+            qc.h(bell_m)
+            for (i, j) in support: qc.cx(bell_m, dq(i, j))
+            qc.h(bell_m)
+            qc.measure(bell_m, n_cregs[2 + rnd][0])
     
     if partial_x:
         for i in range(r): qc.h(dq(i, 0))
@@ -39,7 +62,7 @@ def build_virtual_circuit(r, s, g, partial_x=False):
     
     for i in range(r):
         for j in range(s):
-            qc.measure(dq(i, j), cregs[0][i * s + j])
+            qc.measure(dq(i, j), n_cregs[0][i * s + j])
     
     return qc
 

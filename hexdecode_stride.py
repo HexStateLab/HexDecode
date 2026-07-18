@@ -22,6 +22,8 @@ def main():
     ap.add_argument("--grid", type=int, nargs=2, default=(6, 6))
     ap.add_argument("--stride", "-g", type=int, default=6)
     ap.add_argument("--shots", type=int, default=2000)
+    ap.add_argument("--rounds", type=int, default=1,
+                    help="Bell ancilla measurement rounds in circuit")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--token", type=str, default=None)
     opts = ap.parse_args()
@@ -36,8 +38,9 @@ def main():
     print(f"  Physical: {r*s}d + 0a = {r*s}q  rate={rate:.0f}%  d≈{d}")
     print(f"{'='*60}")
 
-    qc_zz = build_virtual_circuit(r, s, g, partial_x=False)
-    qc_xx = build_virtual_circuit(r, s, g, partial_x=True)
+    qc_zz = build_virtual_circuit(r, s, g, partial_x=False, rounds=opts.rounds)
+    use_partial_x = (opts.rounds == 1)
+    qc_xx = build_virtual_circuit(r, s, g, partial_x=use_partial_x, rounds=opts.rounds)
     for lab, qc in [("ZZ", qc_zz), ("XX", qc_xx)]:
         ops = qc.count_ops()
         print(f"  {lab}: {qc.num_qubits}q  CX={ops.get('cx',0)}  depth={qc.depth()}")
@@ -97,22 +100,29 @@ def main():
             bits = z1_vq ^ z2_vq
             framed = bits
         else:
-            xx_std = np.zeros(nsh, dtype=np.uint8)
-            xx_gg  = np.zeros(nsh, dtype=np.uint8)
-            for shot in range(nsh):
-                xxp = 0
-                for j in range(s): xxp ^= data[shot, 0, j]
-                for i in range(r): xxp ^= data[shot, i, 0]
-                xx_std[shot] = xxp ^ m[shot]
-                xx_gg[shot]  = gauge_graph_xx(data[shot], m[shot])
-            
-            xx_std_val = 2.0 * (xx_std == 0).mean() - 1.0
-            xx_gg_val  = 2.0 * (xx_gg == 0).mean() - 1.0
-            n_xsup = r + s - 1
-            print(f"  <XX> std={xx_std_val:+.4f}  gauge_graph={xx_gg_val:+.4f}  "
-                  f"({n_xsup} X-support qubits)")
-            framed = xx_gg
-            bits = xx_gg
+            # XX: from bell_measure ancilla bits (rounds>1) or partial_x (rounds=1)
+            if opts.rounds > 1 and hasattr(pub.data, 'bell_m0'):
+                xx_bits = np.zeros(nsh, dtype=np.uint8)
+                for rnd in range(opts.rounds - 1):
+                    reg = getattr(pub.data, f'bell_m{rnd}')
+                    bm = reg.to_bool_array(order='little')[:, 0].astype(np.uint8)[:nsh]
+                    xx_bits ^= bm ^ m  # XOR bell_meas with bell_prep, accumulate
+                xx_val = 2.0 * (xx_bits == 0).mean() - 1.0
+                print(f"  <XX> bell_measure={xx_val:+.4f}  ({opts.rounds-1} rounds)")
+                bits = xx_bits; framed = xx_bits
+            else:
+                xx_std = np.zeros(nsh, dtype=np.uint8)
+                xx_gg  = np.zeros(nsh, dtype=np.uint8)
+                for shot in range(nsh):
+                    xxp = 0
+                    for j in range(s): xxp ^= data[shot, 0, j]
+                    for i in range(r): xxp ^= data[shot, i, 0]
+                    xx_std[shot] = xxp ^ m[shot]
+                    xx_gg[shot]  = gauge_graph_xx(data[shot], m[shot])
+                xx_std_val = 2.0 * (xx_std == 0).mean() - 1.0
+                xx_gg_val  = 2.0 * (xx_gg == 0).mean() - 1.0
+                print(f"  <XX> std={xx_std_val:+.4f}  gauge={xx_gg_val:+.4f}")
+                bits = xx_gg; framed = xx_gg
         out[arm] = (bits, framed)
 
     zz_bits, _ = out["ZZ"]
