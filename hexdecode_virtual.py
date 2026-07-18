@@ -42,39 +42,33 @@ from pw_opt import _bell_support_coords
 from offline_sim import setup
 
 
-def build_virtual_circuit(r, s, g, bell_measure=True):
+def build_virtual_circuit(r, s, g, partial_x=False):
     """Build Bell test circuit for virtual QEC code.
     
-    No QEC ancilla rounds. Only Bell ancilla gadgets + data readout.
-    Virtual syndrome reconstructed from data via stride-g check equation.
+    No QEC ancilla rounds. Only Bell prep ancilla.
+    XX correlator from partial_x data + frame correction.
     """
     n_data = r * s
-    n_extra = 2 if bell_measure else 1
+    n_extra = 1  # Bell ancilla only
     
     qr = QuantumRegister(n_data + n_extra, "q")
-    cregs = [ClassicalRegister(n_data, "data")]
-    if bell_measure:
-        cregs += [ClassicalRegister(1, "bell"), ClassicalRegister(1, "bell_m")]
-    else:
-        cregs += [ClassicalRegister(1, "bell")]
+    cregs = [ClassicalRegister(n_data, "data"), ClassicalRegister(1, "bell")]
     qc = QuantumCircuit(qr, *cregs)
     
     dq = lambda i, j: (i % r) * s + (j % s)
     support = _bell_support_coords(r, s, True)
     bell_q = n_data
     
-    # Bell prep
+    # Bell prep (creates Bell state, measures initial frame)
     qc.h(bell_q)
     for (i, j) in support: qc.cx(bell_q, dq(i, j))
     qc.h(bell_q)
     qc.measure(bell_q, cregs[1][0])
     
-    if bell_measure:
-        qc.reset(bell_q)
-        qc.h(bell_q)
-        for (i, j) in support: qc.cx(bell_q, dq(i, j))
-        qc.h(bell_q)
-        qc.measure(bell_q, cregs[2][0])
+    # Partial-X: H on X-support qubits (for XX arm)
+    if partial_x:
+        for i in range(r): qc.h(dq(i, 0))      # col 0
+        for j in range(s): qc.h(dq(0, j))      # row 0
     
     # Data readout
     for i in range(r):
@@ -126,70 +120,80 @@ def demo():
     print(f"  {g*g} sectors → partitioned into {vg*vg} virtual sectors")
     print(f"{'='*60}")
     
-    # Build circuit
-    qc = build_virtual_circuit(r, s, g)
-    cx = qc.count_ops().get('cx', 0)
-    print(f"\nCircuit: {qc.num_qubits}q, {cx} CX (0 ancilla rounds)")
+    # Build circuits
+    qc_zz = build_virtual_circuit(r, s, g, partial_x=False)
+    qc_xx = build_virtual_circuit(r, s, g, partial_x=True)
+    cx_z = qc_zz.count_ops().get('cx', 0)
+    cx_x = qc_xx.count_ops().get('cx', 0)
+    print(f"\nCircuits: ZZ={qc_zz.num_qubits}q {cx_z}CX  XX={qc_xx.num_qubits}q {cx_x}CX")
     
     # Test noiselessly
     _, sampler = setup(seed=42)
-    pub = sampler.run([qc], shots=500).result()[0]
-    db = pub.data.data.to_bool_array(order='little').astype(np.uint8).reshape(-1, r, s)
-    bp = pub.data.bell.to_bool_array(order='little')[:, 0].astype(np.uint8)
-    bm = pub.data.bell_m.to_bool_array(order='little')[:, 0].astype(np.uint8)
+    pub_z = sampler.run([qc_zz], shots=500).result()[0]
+    pub_x = sampler.run([qc_xx], shots=500).result()[0]
     
-    # Virtual decode
-    corr = np.zeros_like(db)
+    db_z = pub_z.data.data.to_bool_array(order='little').astype(np.uint8).reshape(-1, r, s)
+    bp_z = pub_z.data.bell.to_bool_array(order='little')[:, 0].astype(np.uint8)
+    
+    db_x = pub_x.data.data.to_bool_array(order='little').astype(np.uint8).reshape(-1, r, s)
+    bp_x = pub_x.data.bell.to_bool_array(order='little')[:, 0].astype(np.uint8)
+    
+    # Virtual decode on ZZ arm
+    corr = np.zeros_like(db_z)
     t0 = time.perf_counter()
     for shot in range(500):
-        corr[shot] = virtual_decode(db[shot], r, s, g, vg)
+        corr[shot] = virtual_decode(db_z[shot], r, s, g, vg)
     dt = time.perf_counter() - t0
     
-    fixed = db ^ corr
+    fixed = db_z ^ corr
     z1 = fixed[:, 0, :].sum(1) % 2
     z2 = fixed[:, :, 0].sum(1) % 2
     zz = 2.0 * (z1 == z2).mean() - 1.0
-    xx = 2.0 * (bp == bm).mean() - 1.0
+    
+    # XX from partial_x data + frame correction
+    xx_par = np.zeros(500, dtype=np.uint8)
+    for j in range(s): xx_par ^= db_x[:, 0, j]
+    for i in range(r): xx_par ^= db_x[:, i, 0]
+    xx = 2.0 * ((xx_par ^ bp_x) == 0).mean() - 1.0
     W = zz + xx
     
-    z1r = db[:, 0, :].sum(1) % 2
-    z2r = db[:, :, 0].sum(1) % 2
-    zz_raw = 2.0 * (z1r == z2r).mean() - 1.0
-    
-    print(f"  ZZ_raw={zz_raw:+.4f}  ZZ_corr={zz:+.4f}  XX={xx:+.4f}  W={W:+.4f}")
-    print(f"  Decode: {dt*1e3:.1f}ms  Correction weight: {corr.sum(axis=(1,2)).mean():.1f}")
+    print(f"  ZZ_corr={zz:+.4f}  XX_frame={xx:+.4f}  W={W:+.4f}")
+    print(f"  Decode: {dt*1e3:.1f}ms  Corr weight: {corr.sum(axis=(1,2)).mean():.1f}")
     
     # Test with noise
     for noise in [0.001, 0.005, 0.01]:
         _, sampler_n = setup(seed=42, two_qubit_rate=noise)
-        pub_n = sampler_n.run([qc], shots=300).result()[0]
-        db_n = pub_n.data.data.to_bool_array(order='little').astype(np.uint8).reshape(-1, r, s)
-        bp_n = pub_n.data.bell.to_bool_array(order='little')[:, 0].astype(np.uint8)
-        bm_n = pub_n.data.bell_m.to_bool_array(order='little')[:, 0].astype(np.uint8)
+        pub_zn = sampler_n.run([qc_zz], shots=300).result()[0]
+        pub_xn = sampler_n.run([qc_xx], shots=300).result()[0]
+        db_zn = pub_zn.data.data.to_bool_array(order='little').astype(np.uint8).reshape(-1, r, s)
+        bp_xn = pub_xn.data.bell.to_bool_array(order='little')[:, 0].astype(np.uint8)
+        db_xn = pub_xn.data.data.to_bool_array(order='little').astype(np.uint8).reshape(-1, r, s)
         
-        corr_n = np.zeros_like(db_n)
+        corr_n = np.zeros_like(db_zn)
         for shot in range(300):
-            corr_n[shot] = virtual_decode(db_n[shot], r, s, g, vg)
-        fixed_n = db_n ^ corr_n
+            corr_n[shot] = virtual_decode(db_zn[shot], r, s, g, vg)
+        fixed_n = db_zn ^ corr_n
         
         z1n = fixed_n[:, 0, :].sum(1) % 2
         z2n = fixed_n[:, :, 0].sum(1) % 2
         zz_n = 2.0 * (z1n == z2n).mean() - 1.0
-        xx_n = 2.0 * (bp_n == bm_n).mean() - 1.0
+        
+        xx_par_n = np.zeros(300, dtype=np.uint8)
+        for j in range(s): xx_par_n ^= db_xn[:, 0, j]
+        for i in range(r): xx_par_n ^= db_xn[:, i, 0]
+        xx_n = 2.0 * ((xx_par_n ^ bp_xn) == 0).mean() - 1.0
         W_n = zz_n + xx_n
         
         n_errs = int(corr_n.sum())
         print(f"  noise={noise}: ZZ={zz_n:+.4f} XX={xx_n:+.4f} W={W_n:+.4f}  "
               f"corrections={n_errs} flips")
     
-    # Test actual error correction: inject a bit-flip and verify correction
+    # Test error injection
     print(f"\n  Error injection test:")
-    db_test = pub.data.data.to_bool_array(order='little').astype(np.uint8).reshape(-1, r, s)
-    err_injected = db_test[0].copy()
-    err_injected[2, 3] ^= 1  # flip qubit (2,3)
-    
-    corr_test = virtual_decode(err_injected, r, s, g, vg)
-    fixed_test = err_injected ^ corr_test
+    err_test = db_z[0].copy()
+    err_test[2, 3] ^= 1
+    corr_test = virtual_decode(err_test, r, s, g, vg)
+    fixed_test = err_test ^ corr_test
     ok = stride_is_stab(r, s, vg, fixed_test)
     print(f"    Injected bit-flip at (2,3): corrected={'✓' if ok else '✗'}  "
           f"corr_weight={int(corr_test.sum())}")

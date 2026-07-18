@@ -97,8 +97,8 @@ def main():
 
     if use_virtual:
         from hexdecode_virtual import build_virtual_circuit
-        qzz = build_virtual_circuit(r, s, g, bell_measure=False)
-        qxx = build_virtual_circuit(r, s, g, bell_measure=True)
+        qzz = build_virtual_circuit(r, s, g, partial_x=False)
+        qxx = build_virtual_circuit(r, s, g, partial_x=True)
         n_anc_check = 0
     else:
         kw = dict(logical_state="00", bell=True, bell_ancilla=True,
@@ -162,9 +162,6 @@ def main():
             m = pub.data.bell.to_bool_array(order='little')[:, 0].astype(np.uint8)[:shots]
 
         if arm == "ZZ":
-            if use_virtual:
-                # Virtual circuit has bell register but no bell_m
-                pass
             z1 = data[:, 0, :].sum(axis=1) % 2
             z2 = data[:, :, 0].sum(axis=1) % 2
             bits = z1 ^ z2
